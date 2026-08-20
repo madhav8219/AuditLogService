@@ -19,10 +19,10 @@ class JwtTokenProviderTest {
     @Autowired
     private JwtTokenProvider jwtTokenProvider;
 
-    @Value("${jwt.secret}")
+    @Value("${test.jwt.secret}")
     private String jwtSecret;
 
-    @Value("${jwt.expiration-ms}")
+    @Value("${test.jwt.expiration-ms}")
     private long jwtExpirationMs;
 
     @BeforeEach
