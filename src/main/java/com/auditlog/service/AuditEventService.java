@@ -7,12 +7,15 @@ import com.auditlog.dto.CreateAuditEventRequest;
 import com.auditlog.dto.ExportResponse;
 import com.auditlog.dto.RedactionResponse;
 import com.auditlog.entity.AuditEvent;
+import com.auditlog.exception.EvidenceLockException;
 import com.auditlog.exception.InvalidAuditRequestException;
 import com.auditlog.repository.AuditEventRepository;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.transaction.Transactional;
 import org.springframework.data.domain.Page;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.jpa.domain.Specification;
@@ -161,9 +164,13 @@ public class AuditEventService {
         List<AuditEvent> events = auditEventRepository.findAllByOrderByIdAsc();
         List<Long> archivedIds = new ArrayList<>();
         for (AuditEvent event : events) {
-            if (!event.isArchived() && event.getTimestamp().isBefore(effectiveCutoff)) {
+            if (!event.isArchived() && !event.isLegalHold() && event.getTimestamp().isBefore(effectiveCutoff)) {
                 event.setArchived(true);
                 event.setArchivedAt(Instant.now());
+                appendEvidenceAction(event, "ARCHIVE", Map.of(
+                        "actorId", currentActor(),
+                        "scope", "olderThan=" + effectiveCutoff,
+                        "cutoff", effectiveCutoff.toString()));
                 auditEventRepository.save(event);
                 archivedIds.add(event.getId());
             }
@@ -195,6 +202,10 @@ public class AuditEventService {
         AuditEvent event = auditEventRepository.findById(eventId)
                 .orElseThrow(() -> new IllegalArgumentException("Audit event not found: " + eventId));
 
+        if (event.isLegalHold()) {
+            throw new EvidenceLockException("Redaction is blocked while the event is under legal hold");
+        }
+
         Map<String, Object> redaction = event.getRedaction();
         Map<String, Object> payload = new HashMap<>(event.getOriginalPayload().isEmpty() ? event.getPayload() : event.getOriginalPayload());
         Map<String, Object> redactedPayload = new HashMap<>();
@@ -220,6 +231,10 @@ public class AuditEventService {
         event.setRedaction(redaction);
         event.setPayload(redactedPayload);
         event.setOriginalPayload(new HashMap<>(payload));
+        appendEvidenceAction(event, "REDACTION", Map.of(
+                "actorId", currentActor(),
+                "fields", normalizedFields,
+                "scope", event.getResourceId()));
         auditEventRepository.save(event);
 
         return new RedactionResponse(event.getId(), event.getPayload(), event.getRedaction(), event.getHash());
@@ -316,12 +331,18 @@ public class AuditEventService {
             records.addAll(auditEventRepository.findAllByActorIdOrderByIdAsc(actorId));
         }
         if (records.isEmpty()) {
-            return new ExportResponse(0, List.of(), sha256("empty"), Instant.now());
+            return new ExportResponse(0, List.of(), sha256("empty"), Instant.now(), sha256("empty|0"), "HMAC-SHA256", false, 0);
         }
 
         List<ExportResponse.ExportRecord> exportRecords = new ArrayList<>();
         StringBuilder chainSeed = new StringBuilder();
+        int evidenceActionCount = 0;
         for (AuditEvent event : records) {
+            appendEvidenceAction(event, "EXPORT", Map.of(
+                    "actorId", currentActor(),
+                    "scope", resourceId != null && !resourceId.isBlank() ? resourceId : actorId));
+            auditEventRepository.save(event);
+            evidenceActionCount += getEvidenceActionCount(event);
             exportRecords.add(new ExportResponse.ExportRecord(
                     event.getId(),
                     event.getEventType(),
@@ -337,7 +358,81 @@ public class AuditEventService {
             chainSeed.append(event.getId()).append('|').append(event.getHash()).append('|');
         }
 
-        return new ExportResponse(exportRecords.size(), exportRecords, sha256(chainSeed.toString()), Instant.now());
+        String bundleAttestation = sha256(chainSeed + "|" + evidenceActionCount);
+        return new ExportResponse(exportRecords.size(), exportRecords, sha256(chainSeed.toString()), Instant.now(),
+                bundleAttestation, "HMAC-SHA256", true, evidenceActionCount);
+    }
+
+    public Map<String, Object> placeLegalHold(Long eventId, String reason) {
+        AuditEvent event = auditEventRepository.findById(eventId)
+                .orElseThrow(() -> new IllegalArgumentException("Audit event not found: " + eventId));
+
+        event.setLegalHold(true);
+        event.setHoldReason(reason == null || reason.isBlank() ? "LEGAL_HOLD" : reason);
+        event.setHoldPlacedAt(Instant.now());
+        appendEvidenceAction(event, "LEGAL_HOLD", Map.of(
+                "actorId", currentActor(),
+                "reason", event.getHoldReason(),
+                "scope", event.getResourceId()));
+        auditEventRepository.save(event);
+
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("eventId", event.getId());
+        response.put("legalHold", event.isLegalHold());
+        response.put("holdReason", event.getHoldReason());
+        response.put("heldAt", event.getHoldPlacedAt());
+        response.put("evidenceActionCount", getEvidenceActionCount(event));
+        return response;
+    }
+
+    private void appendEvidenceAction(AuditEvent event, String actionType, Map<String, Object> details) {
+        Map<String, Object> metadata = event.getEvidenceMetadata();
+        List<Map<String, Object>> actions = new ArrayList<>();
+        Object existingActions = metadata.get("actions");
+        if (existingActions instanceof List<?> existingList) {
+            for (Object item : existingList) {
+                if (item instanceof Map<?, ?> itemMap) {
+                    Map<String, Object> copy = new LinkedHashMap<>();
+                    itemMap.forEach((key, value) -> copy.put(String.valueOf(key), value));
+                    actions.add(copy);
+                }
+            }
+        }
+
+        Map<String, Object> action = new LinkedHashMap<>();
+        action.put("actionType", actionType);
+        action.put("timestamp", Instant.now().toString());
+        action.put("actorId", details.getOrDefault("actorId", currentActor()));
+        action.put("scope", details.getOrDefault("scope", "audit"));
+        if (details.containsKey("fields")) {
+            action.put("fields", details.get("fields"));
+        }
+        if (details.containsKey("reason")) {
+            action.put("reason", details.get("reason"));
+        }
+        if (details.containsKey("cutoff")) {
+            action.put("cutoff", details.get("cutoff"));
+        }
+        actions.add(action);
+        metadata.put("actions", actions);
+        metadata.put("lastAction", action);
+        event.setEvidenceMetadata(metadata);
+    }
+
+    private int getEvidenceActionCount(AuditEvent event) {
+        Object actions = event.getEvidenceMetadata().get("actions");
+        if (actions instanceof List<?> list) {
+            return list.size();
+        }
+        return 0;
+    }
+
+    private String currentActor() {
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        if (authentication == null || authentication.getName() == null || authentication.getName().isBlank()) {
+            return "system";
+        }
+        return authentication.getName();
     }
 
     private String canonicalizePayload(Map<String, Object> payload) {

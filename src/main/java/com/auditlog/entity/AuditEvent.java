@@ -45,8 +45,21 @@ public class AuditEvent {
     @Column(columnDefinition = "JSON")
     private Map<String, Object> redaction = new HashMap<>();
 
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(columnDefinition = "JSON")
+    private Map<String, Object> evidenceMetadata = new HashMap<>();
+
     @Column(nullable = false)
     private Instant timestamp;
+
+    @Column(nullable = false)
+    private boolean legalHold = false;
+
+    @Column
+    private Instant holdPlacedAt;
+
+    @Column(length = 1024)
+    private String holdReason;
 
     @Column(nullable = false, length = 512)
     private String previousHash;
@@ -144,12 +157,44 @@ public class AuditEvent {
         this.redaction = redaction == null ? new HashMap<>() : redaction;
     }
 
+    public Map<String, Object> getEvidenceMetadata() {
+        return evidenceMetadata == null ? new HashMap<>() : evidenceMetadata;
+    }
+
+    public void setEvidenceMetadata(Map<String, Object> evidenceMetadata) {
+        this.evidenceMetadata = evidenceMetadata == null ? new HashMap<>() : evidenceMetadata;
+    }
+
     public Instant getTimestamp() {
         return timestamp;
     }
 
     public void setTimestamp(Instant timestamp) {
         this.timestamp = timestamp;
+    }
+
+    public boolean isLegalHold() {
+        return legalHold;
+    }
+
+    public void setLegalHold(boolean legalHold) {
+        this.legalHold = legalHold;
+    }
+
+    public Instant getHoldPlacedAt() {
+        return holdPlacedAt;
+    }
+
+    public void setHoldPlacedAt(Instant holdPlacedAt) {
+        this.holdPlacedAt = holdPlacedAt;
+    }
+
+    public String getHoldReason() {
+        return holdReason;
+    }
+
+    public void setHoldReason(String holdReason) {
+        this.holdReason = holdReason;
     }
 
     public void setTimestamp(String timestamp) {

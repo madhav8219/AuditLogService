@@ -345,6 +345,45 @@ class AuditLogControllerIntegrationTest {
     }
 
     @Test
+    void shouldPlaceLegalHoldAndBlockRedactionWhileOnHold() throws Exception {
+        AuditEvent event = auditEventRepository.save(new AuditEvent("ACCOUNT_VIEW", "user-1", "ACCOUNT", "acct-100",
+                Map.of("customerId", "CUST-4321", "ipAddress", "10.0.0.1"), "2026-08-19T12:00:00Z", "GENESIS", "hash-1"));
+
+        mockMvc.perform(post("/audit/events/{id}/hold", event.getId())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "reason": "Litigation hold"
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.legalHold").value(true))
+                .andExpect(jsonPath("$.holdReason").value("Litigation hold"));
+
+        mockMvc.perform(post("/audit/events/{id}/redact", event.getId())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "fields": ["customerId"]
+                                }
+                                """))
+                .andExpect(status().isConflict());
+    }
+
+    @Test
+    void shouldExportAnAttestedBundleWithEvidenceActionMetadata() throws Exception {
+        auditEventRepository.save(new AuditEvent("USER_LOGIN", "user-1", "USER", "user-123",
+                Map.of("ipAddress", "10.0.0.1"), "2026-08-19T12:00:00Z", "GENESIS", "hash-1"));
+
+        mockMvc.perform(get("/audit/export")
+                        .param("resourceId", "user-123"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.bundleAttestation").isNotEmpty())
+                .andExpect(jsonPath("$.attestationAlgorithm").value("HMAC-SHA256"))
+                .andExpect(jsonPath("$.evidenceActionCount").value(1));
+    }
+
+    @Test
     void shouldArchiveHistoricalRecords() throws Exception {
         AuditEvent oldEvent = auditEventRepository.save(new AuditEvent("ACCOUNT_VIEW", "user-1", "ACCOUNT", "acct-100",
                 Map.of("customerId", "CUST-4321"), "2026-08-18T12:00:00Z", "GENESIS", "hash-1"));

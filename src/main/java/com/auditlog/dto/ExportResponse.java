@@ -17,6 +17,10 @@ public class ExportResponse {
     private List<ExportRecord> records;
     private String bundleHash;
     private Instant exportedAt;
+    private String bundleAttestation;
+    private String attestationAlgorithm;
+    private boolean independentlyVerifiable;
+    private int evidenceActionCount;
 
     @Getter
     @Setter

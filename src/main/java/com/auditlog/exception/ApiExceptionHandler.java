@@ -36,6 +36,11 @@ public class ApiExceptionHandler {
         return build(HttpStatus.BAD_REQUEST, "Invalid request", ex.getMessage());
     }
 
+    @ExceptionHandler(EvidenceLockException.class)
+    public ResponseEntity<Map<String, Object>> handleEvidenceLock(EvidenceLockException ex) {
+        return build(HttpStatus.CONFLICT, "Evidence locked", ex.getMessage());
+    }
+
     private ResponseEntity<Map<String, Object>> build(HttpStatus status, String error, String message) {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("timestamp", Instant.now().toString());

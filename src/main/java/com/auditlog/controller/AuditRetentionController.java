@@ -62,4 +62,12 @@ public class AuditRetentionController {
             @RequestParam(required = false) String actorId) {
         return auditEventService.exportBundle(resourceId, actorId);
     }
+
+    @PreAuthorize("hasAnyRole('ADMIN', 'AUDIT_OFFICER')")
+    @PostMapping("/events/{eventId}/hold")
+    public Map<String, Object> placeLegalHold(@PathVariable Long eventId,
+                                              @RequestBody(required = false) Map<String, Object> request) {
+        String reason = request == null ? null : String.valueOf(request.getOrDefault("reason", ""));
+        return auditEventService.placeLegalHold(eventId, reason);
+    }
 }
