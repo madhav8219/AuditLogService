@@ -284,6 +284,55 @@ class AuditLogControllerIntegrationTest {
     }
 
     @Test
+    @WithMockUser(username = "viewer-user", roles = "USER")
+    void shouldRejectUsersWithoutRequiredRoleForAuditEventCreation() throws Exception {
+        mockMvc.perform(post("/audit/events")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "eventType": "USER_LOGIN",
+                                  "actorId": "user-1",
+                                  "resourceType": "USER",
+                                  "resourceId": "user-123",
+                                  "payload": {"ipAddress": "10.0.0.1"}
+                                }
+                                """))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    @WithMockUser(username = "security-user", roles = "SECURITY_ANALYST")
+    void shouldAllowAuthorizedSecurityAnalystToReadAuditEvents() throws Exception {
+        mockMvc.perform(get("/audit/events")
+                        .param("page", "0")
+                        .param("size", "10"))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    @WithMockUser(username = "compliance-user", roles = "COMPLIANCE_REVIEWER")
+    void shouldRejectComplianceReviewerForArchiveEndpoint() throws Exception {
+        mockMvc.perform(post("/audit/retention/archive")
+                        .param("olderThan", "2026-08-19T00:00:00Z"))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    @WithMockUser(username = "audit-officer", roles = "AUDIT_OFFICER")
+    void shouldAllowAuditOfficerToArchiveHistoricalRecords() throws Exception {
+        mockMvc.perform(post("/audit/retention/archive")
+                        .param("olderThan", "2026-08-19T00:00:00Z"))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    @WithMockUser(username = "admin-user", roles = "ADMIN")
+    void shouldAllowAdminToAccessHighPrivilegeComplianceActions() throws Exception {
+        mockMvc.perform(get("/audit/verify"))
+                .andExpect(status().isOk());
+    }
+
+    @Test
     void shouldGenerateAccountAccessComplianceReport() throws Exception {
         auditEventRepository.save(new AuditEvent("ACCOUNT_VIEW", "user-1", "ACCOUNT", "acct-100",
                 Map.of("customerId", "CUST-4321", "ipAddress", "10.0.0.1"), "2026-08-19T12:00:00Z", "GENESIS", "hash-1"));
