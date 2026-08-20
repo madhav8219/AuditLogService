@@ -11,6 +11,7 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -33,12 +34,14 @@ public class AuditEventController {
         this.auditEventService = auditEventService;
     }
 
+    @PreAuthorize("hasAnyRole('ADMIN', 'SERVICE_ACCOUNT')")
     @PostMapping("/events")
     public ResponseEntity<AuditEventResponse> createEvent(@Valid @RequestBody CreateAuditEventRequest request) {
         AuditEvent saved = auditEventService.createEvent(request);
         return ResponseEntity.status(HttpStatus.CREATED).body(AuditEventResponse.fromEntity(saved));
     }
 
+    @PreAuthorize("hasAnyRole('ADMIN', 'AUDIT_OFFICER', 'SECURITY_ANALYST', 'COMPLIANCE_REVIEWER')")
     @GetMapping("/events")
     public Page<AuditEventResponse> getEvents(
             @RequestParam(required = false) String actorId,
@@ -58,6 +61,7 @@ public class AuditEventController {
                 .map(AuditEventResponse::fromEntity);
     }
 
+    @PreAuthorize("hasAnyRole('ADMIN', 'AUDIT_OFFICER', 'SECURITY_ANALYST')")
     @GetMapping("/verify")
     public Map<String, Object> verify() {
         return auditEventService.verifyChain();

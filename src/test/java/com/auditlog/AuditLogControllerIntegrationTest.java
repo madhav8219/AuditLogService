@@ -11,6 +11,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
+import org.springframework.security.test.context.support.WithAnonymousUser;
+import org.springframework.security.test.context.support.WithMockUser;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
@@ -26,6 +28,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @SpringBootTest
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
+@WithMockUser(username = "admin-user", roles = "ADMIN")
 class AuditLogControllerIntegrationTest {
 
     @Autowired
@@ -255,6 +258,29 @@ class AuditLogControllerIntegrationTest {
                 .andExpect(jsonPath("$.payload.customerId").value("[REDACTED]"))
                 .andExpect(jsonPath("$.payload.redaction.customerId.redacted").value(true))
                 .andExpect(jsonPath("$.payload.redaction.customerId.mask").value("[REDACTED]"));
+    }
+
+    @Test
+    @WithAnonymousUser
+    void shouldRequireAuthenticationForRedactionEndpoint() throws Exception {
+        AuditEvent created = auditEventRepository.save(new AuditEvent(
+                "USER_LOGIN",
+                "user-1",
+                "USER",
+                "user-123",
+                Map.of("ipAddress", "10.0.0.1"),
+                "2026-08-19T12:00:00Z",
+                "GENESIS",
+                "hash-1"));
+
+        mockMvc.perform(post("/audit/events/{id}/redact", created.getId())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "fields": ["ipAddress"]
+                                }
+                                """))
+                .andExpect(status().isUnauthorized());
     }
 
     @Test

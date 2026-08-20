@@ -3,6 +3,7 @@ package com.auditlog.controller;
 import com.auditlog.dto.ComplianceReportResponse;
 import com.auditlog.exception.InvalidAuditRequestException;
 import com.auditlog.service.AuditEventService;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -20,6 +21,7 @@ public class AuditComplianceController {
         this.auditEventService = auditEventService;
     }
 
+    @PreAuthorize("hasAnyRole('ADMIN', 'AUDIT_OFFICER', 'COMPLIANCE_REVIEWER')")
     @GetMapping("/compliance/account-access")
     public ComplianceReportResponse getAccountAccessReport(
             @RequestParam(required = false) String actorId,
