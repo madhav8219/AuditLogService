@@ -21,6 +21,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -44,6 +45,8 @@ public class AuditEventService {
 
     @Transactional
     public AuditEvent createEvent(CreateAuditEventRequest request) {
+        Instant eventTimestamp = Instant.now().truncatedTo(ChronoUnit.MILLIS);
+
         String previousHash = auditEventRepository.findTopByOrderByIdDesc()
                 .map(AuditEvent::getHash)
                 .orElse(GENESIS_HASH);
@@ -54,7 +57,7 @@ public class AuditEventService {
                 request.getActorId(),
                 request.getResourceType(),
                 request.getResourceId(),
-                request.getTimestamp().toString(),
+                eventTimestamp.toString(),
                 payloadHashSource,
                 previousHash
         );
@@ -67,7 +70,7 @@ public class AuditEventService {
                 request.getResourceType(),
                 request.getResourceId(),
                 request.getPayload(),
-                request.getTimestamp(),
+                eventTimestamp,
                 previousHash,
                 hash
         );

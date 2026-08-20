@@ -53,8 +53,7 @@ class AuditLogControllerIntegrationTest {
                   "actorId": "user-1",
                   "resourceType": "USER",
                   "resourceId": "user-123",
-                  "payload": {"ipAddress": "10.0.0.1", "loginResult": "SUCCESS"},
-                  "timestamp": "2026-08-19T12:00:00Z"
+                  "payload": {"ipAddress": "10.0.0.1", "loginResult": "SUCCESS"}
                 }
                 """;
 
@@ -67,6 +66,7 @@ class AuditLogControllerIntegrationTest {
         JsonNode response = objectMapper.readTree(result.getResponse().getContentAsString());
         assertThat(response.get("eventType").asText()).isEqualTo("USER_LOGIN");
         assertThat(response.get("actorId").asText()).isEqualTo("user-1");
+        assertThat(response.get("timestamp").asText()).isNotBlank();
         assertThat(response.get("previousHash").asText()).isNotBlank();
         assertThat(response.get("hash").asText()).isNotBlank();
 
@@ -107,8 +107,7 @@ class AuditLogControllerIntegrationTest {
                                   "actorId": "user-1",
                                   "resourceType": "USER",
                                   "resourceId": "user-123",
-                                  "payload": {"ipAddress": "10.0.0.1"},
-                                  "timestamp": "2026-08-19T12:00:00Z"
+                                  "payload": {"ipAddress": "10.0.0.1"}
                                 }
                                 """))
                 .andExpect(status().isCreated());
@@ -128,8 +127,7 @@ class AuditLogControllerIntegrationTest {
                                   "actorId": "user-1",
                                   "resourceType": "USER",
                                   "resourceId": "user-123",
-                                  "payload": {"ipAddress": "10.0.0.1"},
-                                  "timestamp": "2026-08-19T12:00:00Z"
+                                  "payload": {"ipAddress": "10.0.0.1"}
                                 }
                                 """))
                 .andExpect(status().isCreated());
@@ -152,8 +150,7 @@ class AuditLogControllerIntegrationTest {
                                   "actorId": "user-1",
                                   "resourceType": "USER",
                                   "resourceId": "user-123",
-                                  "payload": {"ipAddress": "10.0.0.1", "loginResult": "SUCCESS"},
-                                  "timestamp": "2026-08-19T12:00:00Z"
+                                  "payload": {"ipAddress": "10.0.0.1", "loginResult": "SUCCESS"}
                                 }
                                 """))
                 .andExpect(status().isCreated());
@@ -166,8 +163,7 @@ class AuditLogControllerIntegrationTest {
                                   "actorId": "user-1",
                                   "resourceType": "USER",
                                   "resourceId": "user-123",
-                                  "payload": {"field": "email", "value": "user@example.com"},
-                                  "timestamp": "2026-08-19T12:05:00Z"
+                                  "payload": {"field": "email", "value": "user@example.com"}
                                 }
                                 """))
                 .andExpect(status().isCreated());
@@ -185,8 +181,7 @@ class AuditLogControllerIntegrationTest {
                   "eventType": "USER_LOGIN",
                   "actorId": "user-1",
                   "resourceType": "USER",
-                  "payload": {"ipAddress": "10.0.0.1"},
-                  "timestamp": "2026-08-19T12:00:00Z"
+                  "payload": {"ipAddress": "10.0.0.1"}
                 }
                 """;
 
@@ -204,8 +199,7 @@ class AuditLogControllerIntegrationTest {
                   "actorId": "user-1",
                   "resourceType": "USER",
                   "resourceId": "user-123",
-                  "payload": {"ipAddress": "10.0.0.1"},
-                  "timestamp": "2026-08-19T12:00:00Z"
+                  "payload": {"ipAddress": "10.0.0.1"}
                 }
                 """;
 
@@ -225,8 +219,7 @@ class AuditLogControllerIntegrationTest {
                   "actorId": "user-1",
                   "resourceType": "USER",
                   "resourceId": "user-123",
-                  "payload": {"field": "email", "value": "user@example.com"},
-                  "timestamp": "2026-08-19T12:05:00Z"
+                  "payload": {"field": "email", "value": "user@example.com"}
                 }
                 """;
 
@@ -250,8 +243,7 @@ class AuditLogControllerIntegrationTest {
                                   "actorId": "user-1",
                                   "resourceType": "USER",
                                   "resourceId": "user-123",
-                                  "payload": {"customerId": "CUST-4321", "ipAddress": "10.0.0.1"},
-                                  "timestamp": "2026-08-19T12:00:00Z"
+                                  "payload": {"customerId": "CUST-4321", "ipAddress": "10.0.0.1"}
                                 }
                                 """))
                 .andExpect(status().isCreated());
