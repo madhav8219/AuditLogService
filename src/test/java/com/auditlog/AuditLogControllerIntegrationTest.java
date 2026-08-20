@@ -401,6 +401,48 @@ class AuditLogControllerIntegrationTest {
     }
 
     @Test
+    void shouldCreateEventsWithChainMetadataAndOrderedHashLinks() throws Exception {
+        MvcResult firstResult = mockMvc.perform(post("/audit/events")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "eventType": "USER_LOGIN",
+                                  "actorId": "user-1",
+                                  "resourceType": "USER",
+                                  "resourceId": "user-123",
+                                  "payload": {"ipAddress": "10.0.0.1"}
+                                }
+                                """))
+                .andExpect(status().isCreated())
+                .andReturn();
+
+        JsonNode firstResponse = objectMapper.readTree(firstResult.getResponse().getContentAsString());
+        assertThat(firstResponse.get("id").isNumber()).isTrue();
+        assertThat(firstResponse.get("timestamp").asText()).isNotBlank();
+        assertThat(firstResponse.get("previousHash").asText()).isEqualTo("GENESIS");
+        assertThat(firstResponse.get("hash").asText()).isNotBlank();
+
+        MvcResult secondResult = mockMvc.perform(post("/audit/events")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "eventType": "RECORD_UPDATED",
+                                  "actorId": "user-1",
+                                  "resourceType": "USER",
+                                  "resourceId": "user-123",
+                                  "payload": {"field": "email"}
+                                }
+                                """))
+                .andExpect(status().isCreated())
+                .andReturn();
+
+        JsonNode secondResponse = objectMapper.readTree(secondResult.getResponse().getContentAsString());
+        assertThat(secondResponse.get("previousHash").asText()).isEqualTo(firstResponse.get("hash").asText());
+        assertThat(secondResponse.get("hash").asText()).isNotBlank();
+        assertThat(secondResponse.get("timestamp").asText()).isNotBlank();
+    }
+
+    @Test
     void shouldExportBundleForResourceAndKeepChainMetadata() throws Exception {
         auditEventRepository.save(new AuditEvent("USER_LOGIN", "user-1", "USER", "user-123",
                 Map.of("ipAddress", "10.0.0.1"), "2026-08-19T12:00:00Z", "GENESIS", "hash-1"));
