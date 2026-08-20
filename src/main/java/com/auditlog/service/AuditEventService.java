@@ -1,5 +1,6 @@
 package com.auditlog.service;
 
+import com.auditlog.config.AuditPolicyProperties;
 import com.auditlog.dto.ArchiveResponse;
 import com.auditlog.dto.ComplianceReportResponse;
 import com.auditlog.dto.CreateAuditEventRequest;
@@ -37,10 +38,14 @@ public class AuditEventService {
 
     private final AuditEventRepository auditEventRepository;
     private final ObjectMapper objectMapper;
+    private final AuditPolicyProperties auditPolicyProperties;
 
-    public AuditEventService(AuditEventRepository auditEventRepository, ObjectMapper objectMapper) {
+    public AuditEventService(AuditEventRepository auditEventRepository,
+                            ObjectMapper objectMapper,
+                            AuditPolicyProperties auditPolicyProperties) {
         this.auditEventRepository = auditEventRepository;
         this.objectMapper = objectMapper;
+        this.auditPolicyProperties = auditPolicyProperties;
     }
 
     @Transactional
@@ -151,14 +156,12 @@ public class AuditEventService {
     }
 
     public ArchiveResponse archiveOldRecords(Instant cutoff) {
-        if (cutoff == null) {
-            throw new InvalidAuditRequestException("olderThan is required");
-        }
+        Instant effectiveCutoff = cutoff != null ? cutoff : Instant.now().minusSeconds(auditPolicyProperties.getRetention().getDefaultDays() * 24L * 60L * 60L);
 
         List<AuditEvent> events = auditEventRepository.findAllByOrderByIdAsc();
         List<Long> archivedIds = new ArrayList<>();
         for (AuditEvent event : events) {
-            if (!event.isArchived() && event.getTimestamp().isBefore(cutoff)) {
+            if (!event.isArchived() && event.getTimestamp().isBefore(effectiveCutoff)) {
                 event.setArchived(true);
                 event.setArchivedAt(Instant.now());
                 auditEventRepository.save(event);
@@ -173,11 +176,21 @@ public class AuditEventService {
             throw new InvalidAuditRequestException("eventId must be positive");
         }
 
-        List<String> normalizedFields = sensitiveFields == null ? List.of() : sensitiveFields.stream()
-                .map(String::trim)
-                .filter(field -> !field.isEmpty())
-                .distinct()
-                .toList();
+        List<String> configuredFields = auditPolicyProperties.getRedaction().getSensitiveFields();
+        List<String> normalizedFields;
+        if (sensitiveFields == null) {
+            normalizedFields = configuredFields.stream()
+                    .map(String::trim)
+                    .filter(field -> !field.isEmpty())
+                    .distinct()
+                    .toList();
+        } else {
+            normalizedFields = sensitiveFields.stream()
+                    .map(String::trim)
+                    .filter(field -> !field.isEmpty())
+                    .distinct()
+                    .toList();
+        }
 
         AuditEvent event = auditEventRepository.findById(eventId)
                 .orElseThrow(() -> new IllegalArgumentException("Audit event not found: " + eventId));
@@ -220,10 +233,11 @@ public class AuditEventService {
         Map<String, Object> payload = new HashMap<>();
         Map<String, Object> redactionPayload = new HashMap<>();
 
+        List<String> configuredSensitiveFields = auditPolicyProperties.getRedaction().getSensitiveFields();
         for (Map.Entry<String, Object> entry : source.entrySet()) {
             String key = entry.getKey();
             Object value = entry.getValue();
-            if (key.equals("accountNumber") || key.equals("ssn") || key.equals("personalId") || key.equals("customerId")) {
+            if (configuredSensitiveFields.contains(key)) {
                 Map<String, Object> redactionEntry = new HashMap<>();
                 redactionEntry.put("redacted", true);
                 redactionEntry.put("mask", "[REDACTED]");

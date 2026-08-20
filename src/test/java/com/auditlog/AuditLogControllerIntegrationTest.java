@@ -414,4 +414,15 @@ class AuditLogControllerIntegrationTest {
                 .andExpect(jsonPath("$.intact").value(false))
                 .andExpect(jsonPath("$.firstBrokenRecordId").value(firstEvent.getId().intValue()));
     }
+
+    @Test
+    void shouldUseConfiguredDefaultRetentionWhenCutoffIsNotProvided() throws Exception {
+        AuditEvent oldEvent = auditEventRepository.save(new AuditEvent("ACCOUNT_VIEW", "user-1", "ACCOUNT", "acct-100",
+                Map.of("customerId", "CUST-4321"), "2023-08-18T12:00:00Z", "GENESIS", "hash-1"));
+
+        mockMvc.perform(post("/audit/retention/archive"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.archivedCount").value(1))
+                .andExpect(jsonPath("$.archivedIds[0]").value(oldEvent.getId().intValue()));
+    }
 }

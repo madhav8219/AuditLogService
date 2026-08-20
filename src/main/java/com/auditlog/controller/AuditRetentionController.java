@@ -35,7 +35,7 @@ public class AuditRetentionController {
             @Valid @RequestBody(required = false) ArchiveRequest request) {
         Instant cutoff = request != null ? request.getOlderThan() : olderThan;
         if (cutoff == null) {
-            throw new InvalidAuditRequestException("olderThan is required");
+            return auditEventService.archiveOldRecords(null);
         }
         return auditEventService.archiveOldRecords(cutoff);
     }
