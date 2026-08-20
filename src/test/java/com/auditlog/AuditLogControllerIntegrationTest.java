@@ -351,6 +351,31 @@ class AuditLogControllerIntegrationTest {
     }
 
     @Test
+    @WithAnonymousUser
+    void shouldRejectNonBearerAuthorizationHeader() throws Exception {
+        mockMvc.perform(get("/audit/verify")
+                        .header("Authorization", "Token " + jwtTokenProvider.generateToken("admin-user", List.of("ADMIN"))))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    @WithAnonymousUser
+    void shouldRejectBlankBearerToken() throws Exception {
+        mockMvc.perform(get("/audit/verify")
+                        .header("Authorization", "Bearer "))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    @WithMockUser(username = "viewer-user", roles = "USER")
+    void shouldRejectUserRoleForAdminOnlyArchiveEndpoint() throws Exception {
+        mockMvc.perform(post("/audit/retention/archive")
+                        .param("olderThan", "2026-08-19T00:00:00Z"))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    @WithAnonymousUser
     void shouldDenyExpiredJwtOnProtectedEndpoint() throws Exception {
         SecretKey key = Keys.hmacShaKeyFor(java.util.Base64.getDecoder().decode(java.util.Base64.getEncoder().encodeToString(jwtSecret.getBytes())));
         String expiredToken = Jwts.builder()
@@ -366,12 +391,21 @@ class AuditLogControllerIntegrationTest {
     }
 
     @Test
+    @WithAnonymousUser
     void shouldDenyModifiedJwtOnProtectedEndpoint() throws Exception {
         String validToken = jwtTokenProvider.generateToken("admin-user", List.of("ADMIN"));
         String modifiedToken = validToken.substring(0, validToken.length() - 1) + "A";
 
         mockMvc.perform(get("/audit/verify")
                         .header("Authorization", "Bearer " + modifiedToken))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    @WithAnonymousUser
+    void shouldRejectJwtWithMalformedStructure() throws Exception {
+        mockMvc.perform(get("/audit/verify")
+                        .header("Authorization", "Bearer invalid.jwt.token"))
                 .andExpect(status().isUnauthorized());
     }
 

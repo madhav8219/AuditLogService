@@ -75,6 +75,24 @@ class JwtTokenProviderTest {
     }
 
     @Test
+    void shouldRejectBlankJwtToken() {
+        assertThatThrownBy(() -> jwtTokenProvider.parseClaims(""))
+                .isInstanceOf(RuntimeException.class);
+    }
+
+    @Test
+    void shouldRejectTokenMissingSubjectClaim() {
+        String token = Jwts.builder()
+                .claim("roles", List.of("ADMIN"))
+                .expiration(new Date(System.currentTimeMillis() + 60_000))
+                .signWith(Keys.hmacShaKeyFor(java.util.Base64.getDecoder().decode(java.util.Base64.getEncoder().encodeToString(jwtSecret.getBytes()))))
+                .compact();
+
+        assertThatThrownBy(() -> jwtTokenProvider.parseClaims(token))
+                .isInstanceOf(RuntimeException.class);
+    }
+
+    @Test
     void shouldRejectExpiredJwtToken() {
         String expiredToken = Jwts.builder()
                 .subject("expired-user")
