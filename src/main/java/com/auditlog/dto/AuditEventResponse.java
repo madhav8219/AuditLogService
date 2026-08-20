@@ -12,9 +12,12 @@ public record AuditEventResponse(
         String resourceType,
         String resourceId,
         Map<String, Object> payload,
+        Map<String, Object> redaction,
         Instant timestamp,
         String previousHash,
-        String hash
+        String hash,
+        boolean archived,
+        Instant archivedAt
 ) {
     public static AuditEventResponse fromEntity(AuditEvent event) {
         return new AuditEventResponse(
@@ -24,9 +27,12 @@ public record AuditEventResponse(
                 event.getResourceType(),
                 event.getResourceId(),
                 event.getPayload(),
+                event.getRedaction(),
                 event.getTimestamp(),
                 event.getPreviousHash(),
-                event.getHash()
+                event.getHash(),
+                event.isArchived(),
+                event.getArchivedAt()
         );
     }
 }

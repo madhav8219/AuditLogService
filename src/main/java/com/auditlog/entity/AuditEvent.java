@@ -37,6 +37,14 @@ public class AuditEvent {
     @Column(columnDefinition = "JSON", nullable = false)
     private Map<String, Object> payload = new HashMap<>();
 
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(columnDefinition = "JSON")
+    private Map<String, Object> originalPayload = new HashMap<>();
+
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(columnDefinition = "JSON")
+    private Map<String, Object> redaction = new HashMap<>();
+
     @Column(nullable = false)
     private Instant timestamp;
 
@@ -45,6 +53,12 @@ public class AuditEvent {
 
     @Column(nullable = false, length = 512)
     private String hash;
+
+    @Column(nullable = false)
+    private boolean archived = false;
+
+    @Column
+    private Instant archivedAt;
 
     protected AuditEvent() {
     }
@@ -114,6 +128,22 @@ public class AuditEvent {
         this.payload = payload == null ? new HashMap<>() : payload;
     }
 
+    public Map<String, Object> getOriginalPayload() {
+        return originalPayload == null ? new HashMap<>() : originalPayload;
+    }
+
+    public void setOriginalPayload(Map<String, Object> originalPayload) {
+        this.originalPayload = originalPayload == null ? new HashMap<>() : originalPayload;
+    }
+
+    public Map<String, Object> getRedaction() {
+        return redaction == null ? new HashMap<>() : redaction;
+    }
+
+    public void setRedaction(Map<String, Object> redaction) {
+        this.redaction = redaction == null ? new HashMap<>() : redaction;
+    }
+
     public Instant getTimestamp() {
         return timestamp;
     }
@@ -140,5 +170,25 @@ public class AuditEvent {
 
     public void setHash(String hash) {
         this.hash = hash;
+    }
+
+    public boolean isArchived() {
+        return archived;
+    }
+
+    public void setArchived(boolean archived) {
+        this.archived = archived;
+    }
+
+    public Instant getArchivedAt() {
+        return archivedAt;
+    }
+
+    public void setArchivedAt(Instant archivedAt) {
+        this.archivedAt = archivedAt;
+    }
+
+    public void setArchivedAt(String archivedAt) {
+        this.archivedAt = archivedAt == null ? null : Instant.parse(archivedAt);
     }
 }

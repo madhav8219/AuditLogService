@@ -10,4 +10,9 @@ import java.util.Optional;
 public interface AuditEventRepository extends JpaRepository<AuditEvent, Long>, JpaSpecificationExecutor<AuditEvent> {
     Optional<AuditEvent> findTopByOrderByIdDesc();
     List<AuditEvent> findAllByOrderByIdAsc();
+    List<AuditEvent> findByArchivedFalseOrderByIdAsc();
+    List<AuditEvent> findAllByResourceIdAndArchivedFalseOrderByIdAsc(String resourceId);
+    List<AuditEvent> findAllByActorIdAndArchivedFalseOrderByIdAsc(String actorId);
+    List<AuditEvent> findAllByResourceIdOrderByIdAsc(String resourceId);
+    List<AuditEvent> findAllByActorIdOrderByIdAsc(String actorId);
 }

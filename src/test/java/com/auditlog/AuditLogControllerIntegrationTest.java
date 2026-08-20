@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.auditlog.entity.AuditEvent;
 import com.auditlog.repository.AuditEventRepository;
+import com.auditlog.service.AuditEventService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -35,6 +36,9 @@ class AuditLogControllerIntegrationTest {
 
     @Autowired
     private AuditEventRepository auditEventRepository;
+
+    @Autowired
+    private AuditEventService auditEventService;
 
     @BeforeEach
     void setUp() {
@@ -190,6 +194,90 @@ class AuditLogControllerIntegrationTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(requestBody))
                 .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void shouldSkipArchivedRecordsWhenVerifyingActiveChain() throws Exception {
+        String createFirst = """
+                {
+                  "eventType": "USER_LOGIN",
+                  "actorId": "user-1",
+                  "resourceType": "USER",
+                  "resourceId": "user-123",
+                  "payload": {"ipAddress": "10.0.0.1"},
+                  "timestamp": "2026-08-19T12:00:00Z"
+                }
+                """;
+
+        mockMvc.perform(post("/audit/events")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(createFirst))
+                .andExpect(status().isCreated());
+
+        AuditEvent archived = auditEventRepository.findAllByOrderByIdAsc().get(0);
+        archived.setArchived(true);
+        archived.setArchivedAt("2026-08-19T12:00:00Z");
+        auditEventRepository.save(archived);
+
+        String createSecond = """
+                {
+                  "eventType": "RECORD_UPDATED",
+                  "actorId": "user-1",
+                  "resourceType": "USER",
+                  "resourceId": "user-123",
+                  "payload": {"field": "email", "value": "user@example.com"},
+                  "timestamp": "2026-08-19T12:05:00Z"
+                }
+                """;
+
+        mockMvc.perform(post("/audit/events")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(createSecond))
+                .andExpect(status().isCreated());
+
+        mockMvc.perform(get("/audit/verify"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.intact").value(true));
+    }
+
+    @Test
+    void shouldMaskSensitiveCustomerIdInRedactedView() throws Exception {
+        mockMvc.perform(post("/audit/events")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "eventType": "USER_LOGIN",
+                                  "actorId": "user-1",
+                                  "resourceType": "USER",
+                                  "resourceId": "user-123",
+                                  "payload": {"customerId": "CUST-4321", "ipAddress": "10.0.0.1"},
+                                  "timestamp": "2026-08-19T12:00:00Z"
+                                }
+                                """))
+                .andExpect(status().isCreated());
+
+        AuditEvent created = auditEventRepository.findAllByOrderByIdAsc().get(0);
+
+        mockMvc.perform(get("/audit/events/{id}/redacted", created.getId()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.payload.customerId").value("[REDACTED]"))
+                .andExpect(jsonPath("$.payload.redaction.customerId.redacted").value(true))
+                .andExpect(jsonPath("$.payload.redaction.customerId.mask").value("[REDACTED]"));
+    }
+
+    @Test
+    void shouldExportBundleForResourceAndKeepChainMetadata() throws Exception {
+        auditEventRepository.save(new AuditEvent("USER_LOGIN", "user-1", "USER", "user-123",
+                Map.of("ipAddress", "10.0.0.1"), "2026-08-19T12:00:00Z", "GENESIS", "hash-1"));
+        auditEventRepository.save(new AuditEvent("RECORD_UPDATED", "user-1", "USER", "user-123",
+                Map.of("field", "email"), "2026-08-19T12:05:00Z", "hash-1", "hash-2"));
+
+        mockMvc.perform(get("/audit/export")
+                        .param("resourceId", "user-123"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.recordCount").value(2))
+                .andExpect(jsonPath("$.records[0].previousHash").value("GENESIS"))
+                .andExpect(jsonPath("$.bundleHash").isNotEmpty());
     }
 
     @Test

@@ -65,6 +65,7 @@ public class AuditEventService {
                 previousHash,
                 hash
         );
+        entity.setOriginalPayload(new HashMap<>(request.payload()));
 
         return auditEventRepository.save(entity);
     }
@@ -109,13 +110,14 @@ public class AuditEventService {
 
         String expectedPreviousHash = GENESIS_HASH;
         for (AuditEvent event : events) {
+            Map<String, Object> payloadForHash = event.getOriginalPayload().isEmpty() ? event.getPayload() : event.getOriginalPayload();
             String expectedHash = sha256(String.join("|",
                     event.getEventType(),
                     event.getActorId(),
                     event.getResourceType(),
                     event.getResourceId(),
                     event.getTimestamp().toString(),
-                    canonicalizePayload(event.getPayload()),
+                    canonicalizePayload(payloadForHash),
                     expectedPreviousHash
             ));
 
@@ -136,6 +138,141 @@ public class AuditEventService {
             expectedPreviousHash = event.getHash();
         }
 
+        return result;
+    }
+
+    public Map<String, Object> archiveOldRecords(Instant cutoff) {
+        List<AuditEvent> events = auditEventRepository.findAllByOrderByIdAsc();
+        List<Long> archivedIds = new ArrayList<>();
+        for (AuditEvent event : events) {
+            if (!event.isArchived() && event.getTimestamp().isBefore(cutoff)) {
+                event.setArchived(true);
+                event.setArchivedAt(Instant.now());
+                auditEventRepository.save(event);
+                archivedIds.add(event.getId());
+            }
+        }
+        Map<String, Object> result = new HashMap<>();
+        result.put("archivedCount", archivedIds.size());
+        result.put("archivedIds", archivedIds);
+        return result;
+    }
+
+    public Map<String, Object> redactPayload(Long eventId, List<String> sensitiveFields) {
+        AuditEvent event = auditEventRepository.findById(eventId)
+                .orElseThrow(() -> new IllegalArgumentException("Audit event not found: " + eventId));
+
+        Map<String, Object> redaction = event.getRedaction();
+        Map<String, Object> payload = new HashMap<>(event.getOriginalPayload().isEmpty() ? event.getPayload() : event.getOriginalPayload());
+        Map<String, Object> redactedPayload = new HashMap<>();
+        Map<String, Object> redactionPayload = new HashMap<>();
+
+        for (Map.Entry<String, Object> entry : payload.entrySet()) {
+            String key = entry.getKey();
+            Object value = entry.getValue();
+            if (sensitiveFields != null && sensitiveFields.contains(key)) {
+                Map<String, Object> redactionEntry = new HashMap<>();
+                redactionEntry.put("redacted", true);
+                redactionEntry.put("originalHash", sha256(String.valueOf(value)));
+                redactionEntry.put("mask", "[REDACTED]");
+                redaction.put(key, redactionEntry);
+                redactionPayload.put(key, redactionEntry);
+                redactedPayload.put(key, "[REDACTED]");
+            } else {
+                redactedPayload.put(key, value);
+            }
+        }
+
+        redactedPayload.put("redaction", redactionPayload);
+        event.setRedaction(redaction);
+        event.setPayload(redactedPayload);
+        event.setOriginalPayload(new HashMap<>(payload));
+        auditEventRepository.save(event);
+
+        Map<String, Object> result = new HashMap<>();
+        result.put("id", event.getId());
+        result.put("payload", event.getPayload());
+        result.put("redaction", event.getRedaction());
+        result.put("hash", event.getHash());
+        return result;
+    }
+
+    public Map<String, Object> getRedactedView(Long eventId) {
+        AuditEvent event = auditEventRepository.findById(eventId)
+                .orElseThrow(() -> new IllegalArgumentException("Audit event not found: " + eventId));
+
+        Map<String, Object> source = event.getOriginalPayload().isEmpty() ? event.getPayload() : event.getOriginalPayload();
+        Map<String, Object> payload = new HashMap<>();
+        Map<String, Object> redactionPayload = new HashMap<>();
+
+        for (Map.Entry<String, Object> entry : source.entrySet()) {
+            String key = entry.getKey();
+            Object value = entry.getValue();
+            if (key.equals("accountNumber") || key.equals("ssn") || key.equals("personalId") || key.equals("customerId")) {
+                Map<String, Object> redactionEntry = new HashMap<>();
+                redactionEntry.put("redacted", true);
+                redactionEntry.put("mask", "[REDACTED]");
+                redactionEntry.put("originalHash", sha256(String.valueOf(value)));
+                redactionPayload.put(key, redactionEntry);
+                payload.put(key, "[REDACTED]");
+            } else {
+                payload.put(key, value);
+            }
+        }
+        if (!redactionPayload.isEmpty()) {
+            payload.put("redaction", redactionPayload);
+        }
+
+        Map<String, Object> result = new HashMap<>();
+        result.put("id", event.getId());
+        result.put("payload", payload);
+        result.put("redaction", event.getRedaction());
+        result.put("hash", event.getHash());
+        result.put("previousHash", event.getPreviousHash());
+        return result;
+    }
+
+    public Map<String, Object> exportBundle(String resourceId, String actorId) {
+        List<AuditEvent> records = new ArrayList<>();
+        if (resourceId != null && !resourceId.isBlank()) {
+            records.addAll(auditEventRepository.findAllByResourceIdOrderByIdAsc(resourceId));
+        }
+        if (actorId != null && !actorId.isBlank()) {
+            records.addAll(auditEventRepository.findAllByActorIdOrderByIdAsc(actorId));
+        }
+        if (records.isEmpty()) {
+            Map<String, Object> result = new HashMap<>();
+            result.put("recordCount", 0);
+            result.put("records", List.of());
+            result.put("bundleHash", sha256("empty"));
+            return result;
+        }
+
+        List<Map<String, Object>> exportRecords = new ArrayList<>();
+        StringBuilder chainSeed = new StringBuilder();
+        for (AuditEvent event : records) {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("id", event.getId());
+            row.put("eventType", event.getEventType());
+            row.put("actorId", event.getActorId());
+            row.put("resourceType", event.getResourceType());
+            row.put("resourceId", event.getResourceId());
+            row.put("payload", event.getPayload());
+            row.put("timestamp", event.getTimestamp().toString());
+            row.put("previousHash", event.getPreviousHash());
+            row.put("hash", event.getHash());
+            row.put("archived", event.isArchived());
+            row.put("archivedAt", event.getArchivedAt() == null ? null : event.getArchivedAt().toString());
+            exportRecords.add(row);
+            chainSeed.append(event.getId()).append('|').append(event.getHash()).append('|');
+        }
+
+        String bundleHash = sha256(chainSeed.toString());
+        Map<String, Object> result = new HashMap<>();
+        result.put("recordCount", exportRecords.size());
+        result.put("records", exportRecords);
+        result.put("bundleHash", bundleHash);
+        result.put("exportedAt", Instant.now().toString());
         return result;
     }
 
