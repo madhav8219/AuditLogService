@@ -1,7 +1,12 @@
 package com.auditlog.service;
 
+import com.auditlog.dto.ArchiveResponse;
+import com.auditlog.dto.ComplianceReportResponse;
 import com.auditlog.dto.CreateAuditEventRequest;
+import com.auditlog.dto.ExportResponse;
+import com.auditlog.dto.RedactionResponse;
 import com.auditlog.entity.AuditEvent;
+import com.auditlog.exception.InvalidAuditRequestException;
 import com.auditlog.repository.AuditEventRepository;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -43,13 +48,13 @@ public class AuditEventService {
                 .map(AuditEvent::getHash)
                 .orElse(GENESIS_HASH);
 
-        String payloadHashSource = canonicalizePayload(request.payload());
+        String payloadHashSource = canonicalizePayload(request.getPayload());
         String hashInput = String.join("|",
-                request.eventType(),
-                request.actorId(),
-                request.resourceType(),
-                request.resourceId(),
-                request.timestamp().toString(),
+                request.getEventType(),
+                request.getActorId(),
+                request.getResourceType(),
+                request.getResourceId(),
+                request.getTimestamp().toString(),
                 payloadHashSource,
                 previousHash
         );
@@ -57,16 +62,16 @@ public class AuditEventService {
         String hash = sha256(hashInput);
 
         AuditEvent entity = new AuditEvent(
-                request.eventType(),
-                request.actorId(),
-                request.resourceType(),
-                request.resourceId(),
-                request.payload(),
-                request.timestamp(),
+                request.getEventType(),
+                request.getActorId(),
+                request.getResourceType(),
+                request.getResourceId(),
+                request.getPayload(),
+                request.getTimestamp(),
                 previousHash,
                 hash
         );
-        entity.setOriginalPayload(new HashMap<>(request.payload()));
+        entity.setOriginalPayload(new HashMap<>(request.getPayload()));
 
         return auditEventRepository.save(entity);
     }
@@ -142,7 +147,11 @@ public class AuditEventService {
         return result;
     }
 
-    public Map<String, Object> archiveOldRecords(Instant cutoff) {
+    public ArchiveResponse archiveOldRecords(Instant cutoff) {
+        if (cutoff == null) {
+            throw new InvalidAuditRequestException("olderThan is required");
+        }
+
         List<AuditEvent> events = auditEventRepository.findAllByOrderByIdAsc();
         List<Long> archivedIds = new ArrayList<>();
         for (AuditEvent event : events) {
@@ -153,13 +162,20 @@ public class AuditEventService {
                 archivedIds.add(event.getId());
             }
         }
-        Map<String, Object> result = new HashMap<>();
-        result.put("archivedCount", archivedIds.size());
-        result.put("archivedIds", archivedIds);
-        return result;
+        return new ArchiveResponse(archivedIds.size(), archivedIds);
     }
 
-    public Map<String, Object> redactPayload(Long eventId, List<String> sensitiveFields) {
+    public RedactionResponse redactPayload(Long eventId, List<String> sensitiveFields) {
+        if (eventId == null || eventId <= 0) {
+            throw new InvalidAuditRequestException("eventId must be positive");
+        }
+
+        List<String> normalizedFields = sensitiveFields == null ? List.of() : sensitiveFields.stream()
+                .map(String::trim)
+                .filter(field -> !field.isEmpty())
+                .distinct()
+                .toList();
+
         AuditEvent event = auditEventRepository.findById(eventId)
                 .orElseThrow(() -> new IllegalArgumentException("Audit event not found: " + eventId));
 
@@ -171,7 +187,7 @@ public class AuditEventService {
         for (Map.Entry<String, Object> entry : payload.entrySet()) {
             String key = entry.getKey();
             Object value = entry.getValue();
-            if (sensitiveFields != null && sensitiveFields.contains(key)) {
+            if (normalizedFields.contains(key)) {
                 Map<String, Object> redactionEntry = new HashMap<>();
                 redactionEntry.put("redacted", true);
                 redactionEntry.put("originalHash", sha256(String.valueOf(value)));
@@ -190,12 +206,7 @@ public class AuditEventService {
         event.setOriginalPayload(new HashMap<>(payload));
         auditEventRepository.save(event);
 
-        Map<String, Object> result = new HashMap<>();
-        result.put("id", event.getId());
-        result.put("payload", event.getPayload());
-        result.put("redaction", event.getRedaction());
-        result.put("hash", event.getHash());
-        return result;
+        return new RedactionResponse(event.getId(), event.getPayload(), event.getRedaction(), event.getHash());
     }
 
     public Map<String, Object> getRedactedView(Long eventId) {
@@ -233,8 +244,12 @@ public class AuditEventService {
         return result;
     }
 
-    public Map<String, Object> generateAccountAccessReport(String actorId, String resourceId, String eventType,
-                                                          Instant from, Instant to) {
+    public ComplianceReportResponse generateAccountAccessReport(String actorId, String resourceId, String eventType,
+                                                               Instant from, Instant to) {
+        if (from != null && to != null && from.isAfter(to)) {
+            throw new InvalidAuditRequestException("from must be before to");
+        }
+
         Specification<AuditEvent> specification = Specification.where(null);
 
         if (actorId != null && !actorId.isBlank()) {
@@ -254,37 +269,28 @@ public class AuditEventService {
         }
 
         List<AuditEvent> events = auditEventRepository.findAll(specification, Sort.by(Sort.Direction.ASC, "timestamp"));
-        List<Map<String, Object>> accessRecords = new ArrayList<>();
+        List<ComplianceReportResponse.ComplianceReportRecord> accessRecords = new ArrayList<>();
 
         for (AuditEvent event : events) {
-            Map<String, Object> row = new LinkedHashMap<>();
-            row.put("id", event.getId());
-            row.put("timestamp", event.getTimestamp().toString());
-            row.put("actorId", event.getActorId());
-            row.put("resourceType", event.getResourceType());
-            row.put("resourceId", event.getResourceId());
-            row.put("eventType", event.getEventType());
-            row.put("redacted", event.getRedaction() == null || event.getRedaction().isEmpty() ? false : true);
-            row.put("hash", event.getHash());
-            accessRecords.add(row);
+            accessRecords.add(new ComplianceReportResponse.ComplianceReportRecord(
+                    event.getId(),
+                    event.getTimestamp(),
+                    event.getActorId(),
+                    event.getResourceType(),
+                    event.getResourceId(),
+                    event.getEventType(),
+                    event.getRedaction() != null && !event.getRedaction().isEmpty(),
+                    event.getHash()));
         }
 
-        Map<String, Object> report = new HashMap<>();
-        report.put("recordCount", accessRecords.size());
-        report.put("records", accessRecords);
-        report.put("generatedAt", Instant.now().toString());
-
-        Map<String, Object> filters = new HashMap<>();
-        filters.put("actorId", actorId);
-        filters.put("resourceId", resourceId);
-        filters.put("eventType", eventType);
-        filters.put("from", from == null ? null : from.toString());
-        filters.put("to", to == null ? null : to.toString());
-        report.put("filters", filters);
-        return report;
+        return new ComplianceReportResponse(
+                accessRecords.size(),
+                accessRecords,
+                Instant.now(),
+                new ComplianceReportResponse.Filters(actorId, resourceId, eventType, from, to));
     }
 
-    public Map<String, Object> exportBundle(String resourceId, String actorId) {
+    public ExportResponse exportBundle(String resourceId, String actorId) {
         List<AuditEvent> records = new ArrayList<>();
         if (resourceId != null && !resourceId.isBlank()) {
             records.addAll(auditEventRepository.findAllByResourceIdOrderByIdAsc(resourceId));
@@ -293,39 +299,28 @@ public class AuditEventService {
             records.addAll(auditEventRepository.findAllByActorIdOrderByIdAsc(actorId));
         }
         if (records.isEmpty()) {
-            Map<String, Object> result = new HashMap<>();
-            result.put("recordCount", 0);
-            result.put("records", List.of());
-            result.put("bundleHash", sha256("empty"));
-            return result;
+            return new ExportResponse(0, List.of(), sha256("empty"), Instant.now());
         }
 
-        List<Map<String, Object>> exportRecords = new ArrayList<>();
+        List<ExportResponse.ExportRecord> exportRecords = new ArrayList<>();
         StringBuilder chainSeed = new StringBuilder();
         for (AuditEvent event : records) {
-            Map<String, Object> row = new LinkedHashMap<>();
-            row.put("id", event.getId());
-            row.put("eventType", event.getEventType());
-            row.put("actorId", event.getActorId());
-            row.put("resourceType", event.getResourceType());
-            row.put("resourceId", event.getResourceId());
-            row.put("payload", event.getPayload());
-            row.put("timestamp", event.getTimestamp().toString());
-            row.put("previousHash", event.getPreviousHash());
-            row.put("hash", event.getHash());
-            row.put("archived", event.isArchived());
-            row.put("archivedAt", event.getArchivedAt() == null ? null : event.getArchivedAt().toString());
-            exportRecords.add(row);
+            exportRecords.add(new ExportResponse.ExportRecord(
+                    event.getId(),
+                    event.getEventType(),
+                    event.getActorId(),
+                    event.getResourceType(),
+                    event.getResourceId(),
+                    event.getPayload(),
+                    event.getTimestamp(),
+                    event.getPreviousHash(),
+                    event.getHash(),
+                    event.isArchived(),
+                    event.getArchivedAt()));
             chainSeed.append(event.getId()).append('|').append(event.getHash()).append('|');
         }
 
-        String bundleHash = sha256(chainSeed.toString());
-        Map<String, Object> result = new HashMap<>();
-        result.put("recordCount", exportRecords.size());
-        result.put("records", exportRecords);
-        result.put("bundleHash", bundleHash);
-        result.put("exportedAt", Instant.now().toString());
-        return result;
+        return new ExportResponse(exportRecords.size(), exportRecords, sha256(chainSeed.toString()), Instant.now());
     }
 
     private String canonicalizePayload(Map<String, Object> payload) {

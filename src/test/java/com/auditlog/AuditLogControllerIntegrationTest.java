@@ -339,6 +339,38 @@ class AuditLogControllerIntegrationTest {
     }
 
     @Test
+    void shouldArchiveHistoricalRecordsFromRequestBody() throws Exception {
+        AuditEvent oldEvent = auditEventRepository.save(new AuditEvent("ACCOUNT_VIEW", "user-1", "ACCOUNT", "acct-100",
+                Map.of("customerId", "CUST-4321"), "2026-08-18T12:00:00Z", "GENESIS", "hash-1"));
+
+        mockMvc.perform(post("/audit/retention/archive")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "olderThan": "2026-08-19T00:00:00Z"
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.archivedCount").value(1))
+                .andExpect(jsonPath("$.archivedIds[0]").value(oldEvent.getId().intValue()));
+    }
+
+    @Test
+    void shouldRejectBlankRedactionFieldNames() throws Exception {
+        AuditEvent event = auditEventRepository.save(new AuditEvent("ACCOUNT_VIEW", "user-1", "ACCOUNT", "acct-100",
+                Map.of("customerId", "CUST-4321", "ipAddress", "10.0.0.1"), "2026-08-19T12:00:00Z", "GENESIS", "hash-1"));
+
+        mockMvc.perform(post("/audit/events/{id}/redact", event.getId())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "fields": ["  ", "customerId"]
+                                }
+                                """))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
     void shouldNotArchiveRecentRecords() throws Exception {
         auditEventRepository.save(new AuditEvent("ACCOUNT_VIEW", "user-1", "ACCOUNT", "acct-100",
                 Map.of("customerId", "CUST-4321"), "2026-08-20T12:00:00Z", "GENESIS", "hash-1"));

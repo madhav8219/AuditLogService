@@ -1,6 +1,13 @@
 package com.auditlog.controller;
 
+import com.auditlog.dto.ArchiveRequest;
+import com.auditlog.dto.ArchiveResponse;
+import com.auditlog.dto.ExportResponse;
+import com.auditlog.dto.RedactionRequest;
+import com.auditlog.dto.RedactionResponse;
+import com.auditlog.exception.InvalidAuditRequestException;
 import com.auditlog.service.AuditEventService;
+import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -10,7 +17,6 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.time.Instant;
-import java.util.List;
 import java.util.Map;
 
 @RestController
@@ -24,8 +30,14 @@ public class AuditRetentionController {
     }
 
     @PostMapping("/retention/archive")
-    public Map<String, Object> archiveOldRecords(@RequestParam Instant olderThan) {
-        return auditEventService.archiveOldRecords(olderThan);
+    public ArchiveResponse archiveOldRecords(
+            @RequestParam(required = false) Instant olderThan,
+            @Valid @RequestBody(required = false) ArchiveRequest request) {
+        Instant cutoff = request != null ? request.getOlderThan() : olderThan;
+        if (cutoff == null) {
+            throw new InvalidAuditRequestException("olderThan is required");
+        }
+        return auditEventService.archiveOldRecords(cutoff);
     }
 
     @GetMapping("/events/{eventId}/redacted")
@@ -34,20 +46,13 @@ public class AuditRetentionController {
     }
 
     @PostMapping("/events/{eventId}/redact")
-    public Map<String, Object> redactEvent(@PathVariable Long eventId,
-                                          @RequestBody Map<String, Object> request) {
-        List<String> sensitiveFields = List.of();
-        if (request != null && request.get("fields") instanceof List<?> rawFields) {
-            sensitiveFields = rawFields.stream()
-                    .filter(String.class::isInstance)
-                    .map(String.class::cast)
-                    .toList();
-        }
-        return auditEventService.redactPayload(eventId, sensitiveFields);
+    public RedactionResponse redactEvent(@PathVariable Long eventId,
+                                        @Valid @RequestBody RedactionRequest request) {
+        return auditEventService.redactPayload(eventId, request.getFields());
     }
 
     @GetMapping("/export")
-    public Map<String, Object> exportBundle(
+    public ExportResponse exportBundle(
             @RequestParam(required = false) String resourceId,
             @RequestParam(required = false) String actorId) {
         return auditEventService.exportBundle(resourceId, actorId);
