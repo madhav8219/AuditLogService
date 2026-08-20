@@ -1,13 +1,18 @@
 package com.auditlog;
 
+import com.auditlog.dto.CreateAuditEventRequest;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.auditlog.entity.AuditEvent;
 import com.auditlog.repository.AuditEventRepository;
+import com.auditlog.security.JwtTokenProvider;
 import com.auditlog.service.AuditEventService;
+import io.jsonwebtoken.Jwts;
+import io.jsonwebtoken.security.Keys;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
@@ -17,7 +22,15 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
+import javax.crypto.SecretKey;
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -35,6 +48,9 @@ class AuditLogControllerIntegrationTest {
     private MockMvc mockMvc;
 
     @Autowired
+    private JwtTokenProvider jwtTokenProvider;
+
+    @Autowired
     private ObjectMapper objectMapper;
 
     @Autowired
@@ -42,6 +58,9 @@ class AuditLogControllerIntegrationTest {
 
     @Autowired
     private AuditEventService auditEventService;
+
+    @Value("${jwt.secret}")
+    private String jwtSecret;
 
     @BeforeEach
     void setUp() {
@@ -301,6 +320,62 @@ class AuditLogControllerIntegrationTest {
     }
 
     @Test
+    @WithMockUser(username = "admin-user", roles = "ADMIN")
+    void shouldAllowAdminRoleOnProtectedEndpoint() throws Exception {
+        mockMvc.perform(get("/audit/verify"))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    @WithMockUser(username = "audit-officer", roles = "AUDIT_OFFICER")
+    void shouldRejectAuditOfficerOnAdminOnlyEndpoint() throws Exception {
+        mockMvc.perform(post("/audit/events")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "eventType": "USER_LOGIN",
+                                  "actorId": "user-1",
+                                  "resourceType": "USER",
+                                  "resourceId": "user-123",
+                                  "payload": {"ipAddress": "10.0.0.1"}
+                                }
+                                """))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    @WithAnonymousUser
+    void shouldDenyAnonymousAccessToProtectedEndpoint() throws Exception {
+        mockMvc.perform(get("/audit/verify"))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void shouldDenyExpiredJwtOnProtectedEndpoint() throws Exception {
+        SecretKey key = Keys.hmacShaKeyFor(java.util.Base64.getDecoder().decode(java.util.Base64.getEncoder().encodeToString(jwtSecret.getBytes())));
+        String expiredToken = Jwts.builder()
+                .subject("expired-user")
+                .claim("roles", List.of("ADMIN"))
+                .expiration(new Date(System.currentTimeMillis() - 60_000))
+                .signWith(key)
+                .compact();
+
+        mockMvc.perform(get("/audit/verify")
+                        .header("Authorization", "Bearer " + expiredToken))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void shouldDenyModifiedJwtOnProtectedEndpoint() throws Exception {
+        String validToken = jwtTokenProvider.generateToken("admin-user", List.of("ADMIN"));
+        String modifiedToken = validToken.substring(0, validToken.length() - 1) + "A";
+
+        mockMvc.perform(get("/audit/verify")
+                        .header("Authorization", "Bearer " + modifiedToken))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
     @WithMockUser(username = "security-user", roles = "SECURITY_ANALYST")
     void shouldAllowAuthorizedSecurityAnalystToReadAuditEvents() throws Exception {
         mockMvc.perform(get("/audit/events")
@@ -330,6 +405,57 @@ class AuditLogControllerIntegrationTest {
     void shouldAllowAdminToAccessHighPrivilegeComplianceActions() throws Exception {
         mockMvc.perform(get("/audit/verify"))
                 .andExpect(status().isOk());
+    }
+
+    @Test
+    void shouldDeduplicateSameAppendPayload() {
+        CreateAuditEventRequest request = new CreateAuditEventRequest();
+        request.setEventType("USER_LOGIN");
+        request.setActorId("user-1");
+        request.setResourceType("USER");
+        request.setResourceId("user-123");
+        request.setPayload(Map.of("ipAddress", "10.0.0.1"));
+
+        AuditEvent first = auditEventService.createEvent(request);
+        AuditEvent second = auditEventService.createEvent(request);
+
+        assertThat(first.getId()).isEqualTo(second.getId());
+        assertThat(auditEventRepository.count()).isEqualTo(1L);
+        assertThat(auditEventService.verifyChain().get("intact")).isEqualTo(true);
+    }
+
+    @Test
+    void shouldKeepHashChainIntactUnderConcurrentAppend() throws Exception {
+        ExecutorService executor = Executors.newFixedThreadPool(4);
+        CountDownLatch ready = new CountDownLatch(4);
+        CountDownLatch start = new CountDownLatch(1);
+        List<Future<AuditEvent>> futures = new ArrayList<>();
+
+        for (int i = 0; i < 4; i++) {
+            final int index = i;
+            futures.add(executor.submit(() -> {
+                ready.countDown();
+                start.await();
+                CreateAuditEventRequest request = new CreateAuditEventRequest();
+                request.setEventType("USER_LOGIN");
+                request.setActorId("user-" + index);
+                request.setResourceType("USER");
+                request.setResourceId("user-" + index);
+                request.setPayload(Map.of("ipAddress", "10.0.0." + index));
+                return auditEventService.createEvent(request);
+            }));
+        }
+
+        ready.await();
+        start.countDown();
+
+        for (Future<AuditEvent> future : futures) {
+            future.get();
+        }
+        executor.shutdown();
+
+        assertThat(auditEventRepository.count()).isEqualTo(4L);
+        assertThat(auditEventService.verifyChain().get("intact")).isEqualTo(true);
     }
 
     @Test
@@ -433,6 +559,36 @@ class AuditLogControllerIntegrationTest {
     }
 
     @Test
+    void shouldFlagIntegrityViolationAfterRedactionOrArchiveAction() throws Exception {
+        AuditEvent event = auditEventRepository.save(new AuditEvent(
+                "USER_LOGIN",
+                "user-1",
+                "USER",
+                "user-123",
+                Map.of("customerId", "CUST-4321", "ipAddress", "10.0.0.1"),
+                "2026-08-19T12:00:00Z",
+                "GENESIS",
+                "hash-1"));
+
+        mockMvc.perform(post("/audit/events/{id}/redact", event.getId())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "fields": ["customerId"]
+                                }
+                                """))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(post("/audit/retention/archive")
+                        .param("olderThan", "2026-08-19T00:00:00Z"))
+                .andExpect(status().isOk());
+
+        Map<String, Object> verification = auditEventService.verifyChain();
+        assertThat((Boolean) verification.get("intact")).isFalse();
+        assertThat(verification.get("violationType")).isNotNull();
+    }
+
+    @Test
     void shouldArchiveHistoricalRecords() throws Exception {
         AuditEvent oldEvent = auditEventRepository.save(new AuditEvent("ACCOUNT_VIEW", "user-1", "ACCOUNT", "acct-100",
                 Map.of("customerId", "CUST-4321"), "2026-08-18T12:00:00Z", "GENESIS", "hash-1"));
@@ -528,6 +684,35 @@ class AuditLogControllerIntegrationTest {
         assertThat(secondResponse.get("previousHash").asText()).isEqualTo(firstResponse.get("hash").asText());
         assertThat(secondResponse.get("hash").asText()).isNotBlank();
         assertThat(secondResponse.get("timestamp").asText()).isNotBlank();
+    }
+
+    @Test
+    void shouldFlagBrokenExportAsNotIndependentlyVerifiable() throws Exception {
+        AuditEvent firstEvent = auditEventRepository.save(new AuditEvent("USER_LOGIN", "user-1", "USER", "user-123",
+                Map.of("ipAddress", "10.0.0.1"), "2026-08-19T12:00:00Z", "GENESIS", "hash-1"));
+        auditEventRepository.save(new AuditEvent("RECORD_UPDATED", "user-1", "USER", "user-123",
+                Map.of("field", "email"), "2026-08-19T12:05:00Z", "hash-1", "hash-2"));
+
+        MvcResult firstExport = mockMvc.perform(get("/audit/export")
+                        .param("resourceId", "user-123"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        String originalAttestation = objectMapper.readTree(firstExport.getResponse().getContentAsString())
+                .get("bundleAttestation").asText();
+
+        firstEvent.setPayload(Map.of("ipAddress", "10.0.0.9"));
+        auditEventRepository.save(firstEvent);
+
+        MvcResult secondExport = mockMvc.perform(get("/audit/export")
+                        .param("resourceId", "user-123"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        JsonNode secondExportBody = objectMapper.readTree(secondExport.getResponse().getContentAsString());
+        assertThat(secondExportBody.get("bundleAttestation").asText()).isNotEqualTo(originalAttestation);
+        assertThat(secondExportBody.get("independentlyVerifiable").asBoolean()).isFalse();
+        assertThat(auditEventService.verifyChain().get("intact")).isEqualTo(false);
     }
 
     @Test

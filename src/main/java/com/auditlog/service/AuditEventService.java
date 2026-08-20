@@ -7,8 +7,10 @@ import com.auditlog.dto.CreateAuditEventRequest;
 import com.auditlog.dto.ExportResponse;
 import com.auditlog.dto.RedactionResponse;
 import com.auditlog.entity.AuditEvent;
+import com.auditlog.entity.AuditChainLock;
 import com.auditlog.exception.EvidenceLockException;
 import com.auditlog.exception.InvalidAuditRequestException;
+import com.auditlog.repository.AuditChainLockRepository;
 import com.auditlog.repository.AuditEventRepository;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -40,26 +42,60 @@ public class AuditEventService {
     private static final String GENESIS_HASH = "GENESIS";
 
     private final AuditEventRepository auditEventRepository;
+    private final AuditChainLockRepository auditChainLockRepository;
     private final ObjectMapper objectMapper;
     private final AuditPolicyProperties auditPolicyProperties;
 
     public AuditEventService(AuditEventRepository auditEventRepository,
+                            AuditChainLockRepository auditChainLockRepository,
                             ObjectMapper objectMapper,
                             AuditPolicyProperties auditPolicyProperties) {
         this.auditEventRepository = auditEventRepository;
+        this.auditChainLockRepository = auditChainLockRepository;
         this.objectMapper = objectMapper;
         this.auditPolicyProperties = auditPolicyProperties;
     }
 
     @Transactional
     public AuditEvent createEvent(CreateAuditEventRequest request) {
-        Instant eventTimestamp = Instant.now().truncatedTo(ChronoUnit.MILLIS);
-
-        String previousHash = auditEventRepository.findTopByOrderByIdDesc()
-                .map(AuditEvent::getHash)
-                .orElse(GENESIS_HASH);
+        if (request == null) {
+            throw new InvalidAuditRequestException("request cannot be null");
+        }
 
         String payloadHashSource = canonicalizePayload(request.getPayload());
+        String requestFingerprint = String.join("|",
+                request.getEventType(),
+                request.getActorId(),
+                request.getResourceType(),
+                request.getResourceId(),
+                payloadHashSource
+        );
+
+        for (AuditEvent existing : auditEventRepository.findAll()) {
+            String existingFingerprint = String.join("|",
+                    existing.getEventType(),
+                    existing.getActorId(),
+                    existing.getResourceType(),
+                    existing.getResourceId(),
+                    canonicalizePayload(existing.getOriginalPayload().isEmpty() ? existing.getPayload() : existing.getOriginalPayload())
+            );
+            if (requestFingerprint.equals(existingFingerprint)) {
+                return existing;
+            }
+        }
+
+        Instant eventTimestamp = Instant.now().truncatedTo(ChronoUnit.MILLIS);
+
+        AuditChainLock lock = auditChainLockRepository.findByIdForUpdate(1L)
+                .orElseGet(() -> auditChainLockRepository.save(new AuditChainLock()));
+
+        AuditEvent latest = auditEventRepository.findLatestForUpdate(Pageable.ofSize(1))
+                .stream()
+                .findFirst()
+                .orElse(null);
+
+        String previousHash = latest != null ? latest.getHash() : GENESIS_HASH;
+
         String hashInput = String.join("|",
                 request.getEventType(),
                 request.getActorId(),
@@ -334,6 +370,7 @@ public class AuditEventService {
             return new ExportResponse(0, List.of(), sha256("empty"), Instant.now(), sha256("empty|0"), "HMAC-SHA256", false, 0);
         }
 
+        boolean independentlyVerifiable = Boolean.TRUE.equals(verifyChain().get("intact"));
         List<ExportResponse.ExportRecord> exportRecords = new ArrayList<>();
         StringBuilder chainSeed = new StringBuilder();
         int evidenceActionCount = 0;
@@ -360,7 +397,7 @@ public class AuditEventService {
 
         String bundleAttestation = sha256(chainSeed + "|" + evidenceActionCount);
         return new ExportResponse(exportRecords.size(), exportRecords, sha256(chainSeed.toString()), Instant.now(),
-                bundleAttestation, "HMAC-SHA256", true, evidenceActionCount);
+                bundleAttestation, "HMAC-SHA256", independentlyVerifiable, evidenceActionCount);
     }
 
     public Map<String, Object> placeLegalHold(Long eventId, String reason) {
