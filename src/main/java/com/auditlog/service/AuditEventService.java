@@ -8,6 +8,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.transaction.Transactional;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Service;
 
@@ -230,6 +231,57 @@ public class AuditEventService {
         result.put("hash", event.getHash());
         result.put("previousHash", event.getPreviousHash());
         return result;
+    }
+
+    public Map<String, Object> generateAccountAccessReport(String actorId, String resourceId, String eventType,
+                                                          Instant from, Instant to) {
+        Specification<AuditEvent> specification = Specification.where(null);
+
+        if (actorId != null && !actorId.isBlank()) {
+            specification = specification.and((root, query, cb) -> cb.equal(root.get("actorId"), actorId));
+        }
+        if (resourceId != null && !resourceId.isBlank()) {
+            specification = specification.and((root, query, cb) -> cb.equal(root.get("resourceId"), resourceId));
+        }
+        if (eventType != null && !eventType.isBlank()) {
+            specification = specification.and((root, query, cb) -> cb.equal(root.get("eventType"), eventType));
+        }
+        if (from != null) {
+            specification = specification.and((root, query, cb) -> cb.greaterThanOrEqualTo(root.get("timestamp"), from));
+        }
+        if (to != null) {
+            specification = specification.and((root, query, cb) -> cb.lessThanOrEqualTo(root.get("timestamp"), to));
+        }
+
+        List<AuditEvent> events = auditEventRepository.findAll(specification, Sort.by(Sort.Direction.ASC, "timestamp"));
+        List<Map<String, Object>> accessRecords = new ArrayList<>();
+
+        for (AuditEvent event : events) {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("id", event.getId());
+            row.put("timestamp", event.getTimestamp().toString());
+            row.put("actorId", event.getActorId());
+            row.put("resourceType", event.getResourceType());
+            row.put("resourceId", event.getResourceId());
+            row.put("eventType", event.getEventType());
+            row.put("redacted", event.getRedaction() == null || event.getRedaction().isEmpty() ? false : true);
+            row.put("hash", event.getHash());
+            accessRecords.add(row);
+        }
+
+        Map<String, Object> report = new HashMap<>();
+        report.put("recordCount", accessRecords.size());
+        report.put("records", accessRecords);
+        report.put("generatedAt", Instant.now().toString());
+
+        Map<String, Object> filters = new HashMap<>();
+        filters.put("actorId", actorId);
+        filters.put("resourceId", resourceId);
+        filters.put("eventType", eventType);
+        filters.put("from", from == null ? null : from.toString());
+        filters.put("to", to == null ? null : to.toString());
+        report.put("filters", filters);
+        return report;
     }
 
     public Map<String, Object> exportBundle(String resourceId, String actorId) {

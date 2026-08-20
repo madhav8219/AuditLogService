@@ -266,6 +266,91 @@ class AuditLogControllerIntegrationTest {
     }
 
     @Test
+    void shouldGenerateAccountAccessComplianceReport() throws Exception {
+        auditEventRepository.save(new AuditEvent("ACCOUNT_VIEW", "user-1", "ACCOUNT", "acct-100",
+                Map.of("customerId", "CUST-4321", "ipAddress", "10.0.0.1"), "2026-08-19T12:00:00Z", "GENESIS", "hash-1"));
+        auditEventRepository.save(new AuditEvent("ACCOUNT_VIEW", "user-2", "ACCOUNT", "acct-100",
+                Map.of("customerId", "CUST-4321", "ipAddress", "10.0.0.2"), "2026-08-19T12:05:00Z", "hash-1", "hash-2"));
+
+        mockMvc.perform(get("/audit/compliance/account-access")
+                        .param("resourceId", "acct-100")
+                        .param("eventType", "ACCOUNT_VIEW"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.recordCount").value(2))
+                .andExpect(jsonPath("$.records[0].resourceId").value("acct-100"))
+                .andExpect(jsonPath("$.records[0].eventType").value("ACCOUNT_VIEW"));
+    }
+
+    @Test
+    void shouldReturnEmptyComplianceReportWhenNoMatchingAccountAccessEvents() throws Exception {
+        mockMvc.perform(get("/audit/compliance/account-access")
+                        .param("resourceId", "acct-404")
+                        .param("eventType", "ACCOUNT_VIEW"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.recordCount").value(0))
+                .andExpect(jsonPath("$.records").isArray());
+    }
+
+    @Test
+    void shouldPersistRedactionWhenSensitiveFieldsAreProvided() throws Exception {
+        AuditEvent event = auditEventRepository.save(new AuditEvent("ACCOUNT_VIEW", "user-1", "ACCOUNT", "acct-100",
+                Map.of("customerId", "CUST-4321", "ipAddress", "10.0.0.1"), "2026-08-19T12:00:00Z", "GENESIS", "hash-1"));
+
+        mockMvc.perform(post("/audit/events/{id}/redact", event.getId())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "fields": ["customerId"]
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.payload.customerId").value("[REDACTED]"))
+                .andExpect(jsonPath("$.redaction.customerId.redacted").value(true))
+                .andExpect(jsonPath("$.redaction.customerId.mask").value("[REDACTED]"));
+    }
+
+    @Test
+    void shouldLeavePayloadUnchangedWhenRedactCalledWithoutFields() throws Exception {
+        AuditEvent event = auditEventRepository.save(new AuditEvent("ACCOUNT_VIEW", "user-1", "ACCOUNT", "acct-100",
+                Map.of("customerId", "CUST-4321", "ipAddress", "10.0.0.1"), "2026-08-19T12:00:00Z", "GENESIS", "hash-1"));
+
+        mockMvc.perform(post("/audit/events/{id}/redact", event.getId())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "fields": []
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.payload.customerId").value("CUST-4321"))
+                .andExpect(jsonPath("$.redaction").isEmpty());
+    }
+
+    @Test
+    void shouldArchiveHistoricalRecords() throws Exception {
+        AuditEvent oldEvent = auditEventRepository.save(new AuditEvent("ACCOUNT_VIEW", "user-1", "ACCOUNT", "acct-100",
+                Map.of("customerId", "CUST-4321"), "2026-08-18T12:00:00Z", "GENESIS", "hash-1"));
+
+        mockMvc.perform(post("/audit/retention/archive")
+                        .param("olderThan", "2026-08-19T00:00:00Z"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.archivedCount").value(1))
+                .andExpect(jsonPath("$.archivedIds[0]").value(oldEvent.getId().intValue()));
+    }
+
+    @Test
+    void shouldNotArchiveRecentRecords() throws Exception {
+        auditEventRepository.save(new AuditEvent("ACCOUNT_VIEW", "user-1", "ACCOUNT", "acct-100",
+                Map.of("customerId", "CUST-4321"), "2026-08-20T12:00:00Z", "GENESIS", "hash-1"));
+
+        mockMvc.perform(post("/audit/retention/archive")
+                        .param("olderThan", "2026-08-18T00:00:00Z"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.archivedCount").value(0))
+                .andExpect(jsonPath("$.archivedIds").isArray());
+    }
+
+    @Test
     void shouldExportBundleForResourceAndKeepChainMetadata() throws Exception {
         auditEventRepository.save(new AuditEvent("USER_LOGIN", "user-1", "USER", "user-123",
                 Map.of("ipAddress", "10.0.0.1"), "2026-08-19T12:00:00Z", "GENESIS", "hash-1"));
@@ -277,6 +362,16 @@ class AuditLogControllerIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.recordCount").value(2))
                 .andExpect(jsonPath("$.records[0].previousHash").value("GENESIS"))
+                .andExpect(jsonPath("$.bundleHash").isNotEmpty());
+    }
+
+    @Test
+    void shouldReturnEmptyExportBundleWhenNoRecordsMatch() throws Exception {
+        mockMvc.perform(get("/audit/export")
+                        .param("resourceId", "missing-resource"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.recordCount").value(0))
+                .andExpect(jsonPath("$.records").isArray())
                 .andExpect(jsonPath("$.bundleHash").isNotEmpty());
     }
 
