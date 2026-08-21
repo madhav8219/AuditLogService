@@ -401,6 +401,18 @@ class AuditLogControllerIntegrationTest {
     }
 
     @Test
+    @WithMockUser(username = "rate-limited-user-unique", roles = "ADMIN")
+    void shouldThrottleUserAfterExceedingRateLimit() throws Exception {
+        for (int i = 0; i < 1000; i++) {
+            mockMvc.perform(get("/audit/verify"))
+                    .andExpect(status().isOk());
+        }
+
+        mockMvc.perform(get("/audit/verify"))
+                .andExpect(status().isTooManyRequests());
+    }
+
+    @Test
     @WithAnonymousUser
     void shouldDenyExpiredJwtOnProtectedEndpoint() throws Exception {
         SecretKey key = Keys.hmacShaKeyFor(java.util.Base64.getDecoder().decode(java.util.Base64.getEncoder().encodeToString(jwtSecret.getBytes())));
