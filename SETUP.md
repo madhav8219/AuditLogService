@@ -15,7 +15,7 @@ Before running the application, ensure the following are installed:
 ## 2. Clone the repository
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/madhav8219/AuditLogService.git
 cd AuditLogService
 ```
 
