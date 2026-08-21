@@ -5,6 +5,8 @@ import com.auditlog.dto.CreateAuditEventRequest;
 import com.auditlog.entity.AuditEvent;
 import com.auditlog.service.AuditEventService;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
@@ -12,6 +14,7 @@ import org.springframework.data.domain.Sort;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -26,6 +29,7 @@ import java.util.Map;
 
 @RestController
 @RequestMapping("/audit")
+@Validated
 public class AuditEventController {
 
     private final AuditEventService auditEventService;
@@ -50,13 +54,11 @@ public class AuditEventController {
             @RequestParam(required = false) String eventType,
             @RequestParam(required = false) Instant from,
             @RequestParam(required = false) Instant to,
-            @RequestParam(defaultValue = "0") int page,
-            @RequestParam(defaultValue = "20") int size,
+            @RequestParam(defaultValue = "0") @Min(0) int page,
+            @RequestParam(defaultValue = "20") @Min(1) @Max(100) int size,
             @RequestParam(required = false) String[] sort
     ) {
-        int safePage = Math.max(page, 0);
-        int safeSize = Math.max(size, 1);
-        Pageable pageable = PageRequest.of(safePage, safeSize, Sort.unsorted());
+        Pageable pageable = PageRequest.of(page, size, Sort.unsorted());
         return auditEventService.findEvents(actorId, resourceType, resourceId, eventType, from, to, pageable)
                 .map(AuditEventResponse::fromEntity);
     }

@@ -367,6 +367,32 @@ class AuditLogControllerIntegrationTest {
     }
 
     @Test
+    @WithMockUser(username = "audit-officer", roles = "AUDIT_OFFICER")
+    void shouldRejectNegativePageNumberForEventQuery() throws Exception {
+        mockMvc.perform(get("/audit/events")
+                        .param("page", "-1")
+                        .param("size", "10"))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    @WithMockUser(username = "audit-officer", roles = "AUDIT_OFFICER")
+    void shouldRejectOversizedPageSizeForEventQuery() throws Exception {
+        mockMvc.perform(get("/audit/events")
+                        .param("page", "0")
+                        .param("size", "1000"))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    @WithAnonymousUser
+    void shouldRejectWhitespaceOnlyBearerToken() throws Exception {
+        mockMvc.perform(get("/audit/verify")
+                        .header("Authorization", "Bearer    "))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
     @WithMockUser(username = "viewer-user", roles = "USER")
     void shouldRejectUserRoleForAdminOnlyArchiveEndpoint() throws Exception {
         mockMvc.perform(post("/audit/retention/archive")
