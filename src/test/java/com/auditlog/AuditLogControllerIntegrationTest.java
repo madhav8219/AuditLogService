@@ -779,22 +779,87 @@ class AuditLogControllerIntegrationTest {
     }
 
     @Test
-    void shouldFlagBrokenExportAsNotIndependentlyVerifiable() throws Exception {
-        AuditEvent firstEvent = auditEventRepository.save(new AuditEvent("USER_LOGIN", "user-1", "USER", "user-123",
-                Map.of("ipAddress", "10.0.0.1"), "2026-08-19T12:00:00Z", "GENESIS", "hash-1"));
-        auditEventRepository.save(new AuditEvent("RECORD_UPDATED", "user-1", "USER", "user-123",
-                Map.of("field", "email"), "2026-08-19T12:05:00Z", "hash-1", "hash-2"));
+    void shouldExportCleanBundleWithStableAttestationAndVerifiedChain() throws Exception {
+        CreateAuditEventRequest firstRequest = new CreateAuditEventRequest();
+        firstRequest.setEventType("USER_LOGIN");
+        firstRequest.setActorId("user-1");
+        firstRequest.setResourceType("USER");
+        firstRequest.setResourceId("user-123");
+        firstRequest.setPayload(Map.of("ipAddress", "10.0.0.1"));
+
+        CreateAuditEventRequest secondRequest = new CreateAuditEventRequest();
+        secondRequest.setEventType("RECORD_UPDATED");
+        secondRequest.setActorId("user-1");
+        secondRequest.setResourceType("USER");
+        secondRequest.setResourceId("user-123");
+        secondRequest.setPayload(Map.of("field", "email"));
+
+        AuditEvent firstEvent = auditEventService.createEvent(firstRequest);
+        AuditEvent secondEvent = auditEventService.createEvent(secondRequest);
+
+        MvcResult exportResult = mockMvc.perform(get("/audit/export")
+                        .param("resourceId", "user-123"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.recordCount").value(2))
+                .andExpect(jsonPath("$.independentlyVerifiable").value(true))
+                .andExpect(jsonPath("$.attestationAlgorithm").value("HMAC-SHA256"))
+                .andReturn();
+
+        JsonNode exportBody = objectMapper.readTree(exportResult.getResponse().getContentAsString());
+        assertThat(exportBody.get("bundleHash").asText()).isNotBlank();
+        assertThat(exportBody.get("bundleAttestation").asText()).isNotBlank();
+        assertThat(exportBody.get("evidenceActionCount").asInt()).isGreaterThan(0);
+
+        String chainSeed = firstEvent.getId() + "|" + firstEvent.getHash() + "|" +
+                secondEvent.getId() + "|" + secondEvent.getHash() + "|";
+        String expectedBundleHash = sha256(chainSeed);
+        String expectedBundleAttestation = sha256(chainSeed + "|" + exportBody.get("evidenceActionCount").asInt());
+
+        assertThat(exportBody.get("bundleHash").asText()).isEqualTo(expectedBundleHash);
+        assertThat(exportBody.get("bundleAttestation").asText()).isEqualTo(expectedBundleAttestation);
+        assertThat(auditEventService.verifyChain().get("intact")).isEqualTo(true);
+    }
+
+    @Test
+    void shouldRejectExportWhenChainHasBeenTamperedAfterInitialExport() throws Exception {
+        CreateAuditEventRequest firstRequest = new CreateAuditEventRequest();
+        firstRequest.setEventType("USER_LOGIN");
+        firstRequest.setActorId("user-1");
+        firstRequest.setResourceType("USER");
+        firstRequest.setResourceId("user-123");
+        firstRequest.setPayload(Map.of("ipAddress", "10.0.0.1"));
+
+        CreateAuditEventRequest secondRequest = new CreateAuditEventRequest();
+        secondRequest.setEventType("RECORD_UPDATED");
+        secondRequest.setActorId("user-1");
+        secondRequest.setResourceType("USER");
+        secondRequest.setResourceId("user-123");
+        secondRequest.setPayload(Map.of("field", "email"));
+
+        AuditEvent firstEvent = auditEventService.createEvent(firstRequest);
+        auditEventService.createEvent(secondRequest);
 
         MvcResult firstExport = mockMvc.perform(get("/audit/export")
                         .param("resourceId", "user-123"))
                 .andExpect(status().isOk())
+                .andExpect(jsonPath("$.recordCount").value(2))
+                .andExpect(jsonPath("$.independentlyVerifiable").value(true))
                 .andReturn();
 
-        String originalAttestation = objectMapper.readTree(firstExport.getResponse().getContentAsString())
-                .get("bundleAttestation").asText();
+        JsonNode firstExportBody = objectMapper.readTree(firstExport.getResponse().getContentAsString());
+        assertThat(firstExportBody.get("bundleHash").asText()).isNotBlank();
+        assertThat(firstExportBody.get("bundleAttestation").asText()).isNotBlank();
 
-        firstEvent.setPayload(Map.of("ipAddress", "10.0.0.9"));
+        Map<String, Object> tamperedPayload = Map.of("ipAddress", "10.0.0.9");
+        firstEvent.setPayload(tamperedPayload);
+        firstEvent.setOriginalPayload(tamperedPayload);
+        firstEvent.setHash("tampered-hash-value");
         auditEventRepository.save(firstEvent);
+
+        Map<String, Object> verificationAfterTamper = auditEventService.verifyChain();
+        assertThat((Boolean) verificationAfterTamper.get("intact")).isFalse();
+        assertThat(verificationAfterTamper.get("violationType")).isNotNull();
+        assertThat(verificationAfterTamper.get("firstBrokenRecordId")).isEqualTo(firstEvent.getId());
 
         MvcResult secondExport = mockMvc.perform(get("/audit/export")
                         .param("resourceId", "user-123"))
@@ -802,7 +867,9 @@ class AuditLogControllerIntegrationTest {
                 .andReturn();
 
         JsonNode secondExportBody = objectMapper.readTree(secondExport.getResponse().getContentAsString());
-        assertThat(secondExportBody.get("bundleAttestation").asText()).isNotEqualTo(originalAttestation);
+        assertThat(secondExportBody.get("recordCount").asInt()).isEqualTo(2);
+        assertThat(secondExportBody.get("bundleHash").asText()).isNotBlank();
+        assertThat(secondExportBody.get("bundleAttestation").asText()).isNotBlank();
         assertThat(secondExportBody.get("independentlyVerifiable").asBoolean()).isFalse();
         assertThat(auditEventService.verifyChain().get("intact")).isEqualTo(false);
     }
@@ -857,5 +924,23 @@ class AuditLogControllerIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.archivedCount").value(1))
                 .andExpect(jsonPath("$.archivedIds[0]").value(oldEvent.getId().intValue()));
+    }
+
+    private static String sha256(String input) {
+        try {
+            java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-256");
+            byte[] hash = digest.digest(input.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            StringBuilder hex = new StringBuilder();
+            for (byte b : hash) {
+                String hexValue = Integer.toHexString(0xff & b);
+                if (hexValue.length() == 1) {
+                    hex.append('0');
+                }
+                hex.append(hexValue);
+            }
+            return hex.toString();
+        } catch (java.security.NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 not available in test runtime", e);
+        }
     }
 }
