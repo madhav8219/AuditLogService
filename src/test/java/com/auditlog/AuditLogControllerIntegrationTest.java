@@ -35,6 +35,7 @@ import java.util.concurrent.Future;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -397,6 +398,25 @@ class AuditLogControllerIntegrationTest {
     void shouldRejectUserRoleForAdminOnlyArchiveEndpoint() throws Exception {
         mockMvc.perform(post("/audit/retention/archive")
                         .param("olderThan", "2026-08-19T00:00:00Z"))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    @WithMockUser(username = "admin-user", roles = "ADMIN")
+    void shouldAllowConfiguredCorsOriginForPreflight() throws Exception {
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.options("/audit/events")
+                        .header("Origin", "http://localhost:3000")
+                        .header("Access-Control-Request-Method", "GET"))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Access-Control-Allow-Origin", "http://localhost:3000"));
+    }
+
+    @Test
+    @WithMockUser(username = "admin-user", roles = "ADMIN")
+    void shouldRejectWildcardCorsOrigin() throws Exception {
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.options("/audit/events")
+                        .header("Origin", "*")
+                        .header("Access-Control-Request-Method", "GET"))
                 .andExpect(status().isForbidden());
     }
 
