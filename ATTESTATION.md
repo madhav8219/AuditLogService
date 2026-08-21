@@ -5,7 +5,7 @@
 Full Name: Madhav Dhanorkar  
 Email address: dhanorkar.madhav@gmail.com  
 Assignment title: Build an AI-Assisted Software Engineering System — Audit Log Service  
-Start date: 20-08-2026  
+Start date: 19-08-2026  
 Submission date: 21-08-2026
 
 ## Section 0.4 — Security and Trust Attestation
